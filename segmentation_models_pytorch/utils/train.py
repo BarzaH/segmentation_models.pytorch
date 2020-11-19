@@ -27,7 +27,7 @@ class Epoch:
         s = ', '.join(str_logs)
         return s
 
-    def batch_update(self, x, y, i, size):
+    def batch_update(self, x, y):
         raise NotImplementedError
 
     def on_epoch_start(self):
@@ -42,9 +42,9 @@ class Epoch:
         metrics_meters = {metric.__name__: AverageValueMeter() for metric in self.metrics}
 
         with tqdm(dataloader, desc=self.stage_name, file=sys.stdout, disable=not (self.verbose)) as iterator:
-            for i, (x, y) in enumerate(iterator):
+            for x, y in iterator:
                 x, y = x.to(self.device), y.to(self.device)
-                loss, y_pred = self.batch_update(x, y, i, len(dataloader))
+                loss, y_pred = self.batch_update(x, y)
 
                 # update loss logs
                 loss_value = loss.cpu().detach().numpy()
@@ -68,8 +68,7 @@ class Epoch:
 
 class TrainEpoch(Epoch):
 
-    def __init__(self, model, loss, metrics, optimizer, device='cpu', verbose=True,
-                 grad_accumulation_steps=1):
+    def __init__(self, model, loss, metrics, optimizer, device='cpu', verbose=True):
         super().__init__(
             model=model,
             loss=loss,
@@ -80,28 +79,16 @@ class TrainEpoch(Epoch):
         )
         self.optimizer = optimizer
 
-        self.grad_accumulation_steps = grad_accumulation_steps
-        self.optimizer.zero_grad()
-
     def on_epoch_start(self):
         self.model.train()
 
-    def batch_update(self, x, y, i, size):
-        accum_bin = i // self.grad_accumulation_steps
-        accum_left = accum_bin * self.grad_accumulation_steps
-        accum_right = min((accum_bin + 1) * self.grad_accumulation_steps, size)
-        accum_n = accum_right - accum_left
-
-        assert 1 <= accum_n <= self.grad_accumulation_steps
-
+    def batch_update(self, x, y):
+        self.optimizer.zero_grad()
         prediction = self.model.forward(x)
         loss = self.loss(prediction, y)
-        loss = loss / accum_n
         loss.backward()
-        if i + 1 == accum_right:
-            self.optimizer.step()
-            self.optimizer.zero_grad()
-        return loss * accum_n, prediction
+        self.optimizer.step()
+        return loss, prediction
 
 
 class ValidEpoch(Epoch):
@@ -119,7 +106,7 @@ class ValidEpoch(Epoch):
     def on_epoch_start(self):
         self.model.eval()
 
-    def batch_update(self, x, y, i, size):
+    def batch_update(self, x, y):
         with torch.no_grad():
             prediction = self.model.forward(x)
             loss = self.loss(prediction, y)
